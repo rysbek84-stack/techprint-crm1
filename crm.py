@@ -8,8 +8,8 @@ import json
 import random
 import io
 
-# Изменили имя на v3, чтобы принудительно обновить структуру таблиц на сервере
-DB_NAME = "service_center_crm_v3.db"
+# Изменили версию базы данных, чтобы обновить структуру и добавить дефолтных пользователей
+DB_NAME = "service_center_crm_v3_2.db"
 KASPI_PAY_ID = "orgtechnika_shymkent" 
 
 # --- ОБЯЗАТЕЛЬНО ЗАПОЛНИТЕ ДЛЯ АВТО-СОГЛАСОВАНИЯ ЧЕРЕЗ ТГ ---
@@ -46,7 +46,6 @@ def init_db():
         )
     ''')
     
-    # Таблица склада с явным ограничением UNIQUE для корректного импорта (ON CONFLICT)
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS stock (
             id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -58,7 +57,6 @@ def init_db():
         )
     ''')
     
-    # Каталог услуг с ограничением UNIQUE
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS services_catalog (
             id INTEGER PRIMARY KEY AUTOINCREMENT, 
@@ -71,7 +69,6 @@ def init_db():
     cursor.execute('CREATE TABLE IF NOT EXISTS cashbox (id INTEGER PRIMARY KEY AUTOINCREMENT, op_type TEXT, amount REAL, description TEXT, created_at TEXT)')
     cursor.execute('CREATE TABLE IF NOT EXISTS clients_web (phone TEXT PRIMARY KEY, name TEXT, password TEXT)')
     
-    # Создание индексов на случай, если UNIQUE не проставился в старых окружениях
     try:
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_item_name ON stock(item_name)")
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_services_name ON services_catalog(service_name)")
@@ -83,7 +80,6 @@ def init_db():
     if cursor.fetchone()[0] == 0:
         cursor.execute("INSERT INTO users (username, password, full_name, role, commission) VALUES ('admin', 'admin', 'Администратор (Директор)', 'Директор', 0.0)")
         cursor.execute("INSERT INTO users (username, password, full_name, role, commission) VALUES ('reception', '123', 'Алия (Ресепшен)', 'Ресепшен', 0.0)")
-    # Добавляем дефолтного мастера:
         cursor.execute("INSERT INTO users (username, password, full_name, role, commission) VALUES ('master1', '123', 'Иван (Мастер)', 'Мастер', 0.40)")
         
     # Базовый прайс-лист услуг
@@ -241,7 +237,7 @@ st.sidebar.markdown("### ⚙️ РЕЖИМ РАБОТЫ")
 app_mode = st.sidebar.radio("Выберите интерфейс:", ["🏢 Сотрудники СЦ", "📱 Личный кабинет клиента"])
 
 # =====================================================================
-# РЕЖИМ 1: ЛИЧНЫЙ КАБИНЕТ КЛИЕНТА (С ТРЕКИНГОМ СТАТУСА)
+# РЕЖИМ 1: ЛИЧНЫЙ КАБИНЕТ КЛИЕНТА
 # =====================================================================
 if app_mode == "📱 Личный кабинет клиента":
     st.title("📱 Клиенттік Портал — TechPrint.kz")
@@ -297,7 +293,7 @@ if app_mode == "📱 Личный кабинет клиента":
                 conn.commit()
                 conn.close()
                 
-                st.success(f"🎉 Құттықтаймыз, {c_name}! Құрылғыңыз сәтті тіркелді.")
+                st.success(f"🎉 Құттықтаймыз, {c_name}! Құрылғыңыз sәтті тіркелді.")
                 st.warning(f"📋 СІЗДІҢ ТРЕК/КВИТАНЦИЯ НӨМІРІҢІЗ: {rec_no}")
                 st.balloons()
             else:
@@ -358,7 +354,7 @@ if st.session_state['role'] == "Директор":
 elif st.session_state['role'] == "Ресепшен":
     menu = ["📝 Тапсырыстар", "📦 Қойма / Склад (Просмотр)"]
 elif st.session_state['role'] == "Мастер":
-    menu = ["🛠️ Менің тапсырыстарым", "💵 Менің жалақым"]
+    menu = ["🛠️ Менің тапсырыстарым"]
 
 choice = st.sidebar.radio("Мәзір / Меню", menu)
 
@@ -479,6 +475,10 @@ elif choice == "📝 Тапсырыстар":
             m_options = {row['full_name']: row['id'] for _, row in masters_df.iterrows()}
             m_options["Не назначен"] = None
             current_master_name = order_data['master_name'] if order_data['master_name'] else "Не назначен"
+            
+            if current_master_name not in m_options:
+                m_options[current_master_name] = order_data['master_id']
+                
             u_master = st.selectbox("Шеберді өзгерту", list(m_options.keys()), index=list(m_options.keys()).index(current_master_name))
 
             total_bill = u_parts + u_work + penalty_amount
@@ -544,7 +544,63 @@ elif choice == "📝 Тапсырыстар":
                 st.success("Сақталды!")
                 st.rerun()
 
-# --- БЛОК 3: МЕНИ ТАПСЫРЫСТАРЫМ (МАСТЕР) ---
+# =====================================================================
+# ДОБАВЛЕННЫЙ БЛОК 3: ПЕРСОНАЛ (ДОБАВЛЕНИЕ И УДАЛЕНИЕ СОТРУДНИКОВ)
+# =====================================================================
+elif choice == "👥 Персонал (Админ)":
+    st.subheader("👥 CRM Жүйесінің қызметкерлерін басқару")
+    
+    tab_p1, tab_p2 = st.tabs(["➕ Жаңа қызметкер қосу", "❌ Қызметкерді өшіру / Тізім"])
+    
+    with tab_p1:
+        st.markdown("#### ➕ Жаңа пайдаланушыны тіркеу")
+        with st.form("add_user_form", clear_on_submit=True):
+            new_username = st.text_input("Логин (Username)*", placeholder="Мысалы: dastan_master")
+            new_password = st.text_input("Пароль*", type="password")
+            new_full_name = st.text_input("Толық аты-жөні (ФИО)*", placeholder="Мысалы: Дастан Сериков")
+            new_role = st.selectbox("Рөлі / Роль*", ["Мастер", "Ресепшен", "Директор"])
+            new_commission = st.slider("Шебер пайызы (Комиссия)", min_value=0.0, max_value=1.0, value=0.40, step=0.05, help="Тек Мастер рөлі үшін жұмыс істейді.")
+            
+            if st.form_submit_button("💾 Пайдаланушыны сақтау"):
+                if new_username and new_password and new_full_name:
+                    try:
+                        run_query("INSERT INTO users (username, password, full_name, role, commission) VALUES (?, ?, ?, ?, ?)",
+                                  (new_username.strip(), new_password, new_full_name.strip(), new_role, new_commission), is_select=False)
+                        st.success(f"🎉 Қызметкер {new_full_name} сәтті қосылды!")
+                        st.rerun()
+                    except sqlite3.IntegrityError:
+                        st.error("⚠️ Мұндай Логин базада бар! Басқа логин таңдаңыз.")
+                else:
+                    st.error("Барлық міндетті өрістерді (*) толтырыңыз!")
+                    
+    with tab_p2:
+        st.markdown("#### 📋 Ағымдағы қызметкерлер тізімі және өшіру")
+        users_df = run_query("SELECT id, username, full_name, role, commission FROM users")
+        
+        if not users_df.empty:
+            st.dataframe(users_df, use_container_width=True)
+            st.markdown("---")
+            st.markdown("#### 🗑️ Қызметкерді базадан өшіру (Удаление)")
+            
+            # Исключаем текущего залогиненного админа
+            delete_options = users_df[users_df['id'] != st.session_state['user_id']]
+            
+            if not delete_options.empty:
+                user_to_delete_text = st.selectbox(
+                    "Өшіру үшін қызметкерді таңдаңыз:", 
+                    delete_options.apply(lambda r: f"ID {r['id']} | {r['full_name']} ({r['role']})", axis=1).tolist()
+                )
+                user_to_delete_id = int(user_to_delete_text.split(" ")[1])
+                
+                if st.button("🔴 ТҮПКИЛІКТІ ӨШІРУ (УДАЛИТЬ)", type="primary"):
+                    run_query("UPDATE orders SET master_id = NULL WHERE master_id = ?", (user_to_delete_id,), is_select=False)
+                    run_query("DELETE FROM users WHERE id = ?", (user_to_delete_id,), is_select=False)
+                    st.success("💥 Қызметкер сәтті өшірілді!")
+                    st.rerun()
+            else:
+                st.info("Өшіруге қолжетімді басқа қызметкерлер жоқ.")
+
+# --- БЛОК 4: МЕНИ ТАПСЫРЫСТАРЫМ (МАСТЕР) ---
 elif choice == "🛠️ Менің тапсырыстарым":
     st.subheader("🛠️ Сізге бекітілген тапсырыстар")
     my_id = st.session_state['user_id']
@@ -561,186 +617,21 @@ elif choice == "🛠️ Менің тапсырыстарым":
             u_parts = st.number_input("Жұмсалған бөлшектер құны, ₸", value=float(my_order_data['parts_cost']))
             u_work = st.number_input("Жөндеу жұмысының құны, ₸", value=float(my_order_data['work_cost']))
             
+            # ИСПРАВЛЕНО: Закрыта скобка метода st.form_submit_button
             if st.form_submit_button("💾 Сақтау"):
                 time_now = datetime.now().strftime("%Y-%m-%d %H:%M")
                 log_m = f"[{time_now}] Шебер статус өзгертті: {u_status}. Бағасы: Бөлшек {u_parts} ₸, Жұмыс {u_work} ₸.\n"
-                new_history = (my_order_data['history'] if my_order_data['history'] else "") + log_m
+                new_history_m = (my_order_data['history'] if my_order_data['history'] else "") + log_m
                 
-                if u_status == "Готов" and my_order_data['status'] != "Готов":
+                if u_status == "Готов":
                     send_telegram_notification(my_order_data['phone'], my_order_data['client_name'], my_order_data['device_model'], sel_my_id)
-                run_query("UPDATE orders SET status=?, parts_cost=?, work_cost=?, history=? WHERE id=?", (u_status, u_parts, u_work, new_history, sel_my_id), is_select=False)
+                
+                run_query("UPDATE orders SET status=?, parts_cost=?, work_cost=?, history=? WHERE id=?", 
+                          (u_status, u_parts, u_work, new_history_m, sel_my_id), is_select=False)
                 st.success("Сақталды!")
                 st.rerun()
+    else:
+        st.info("Сізге әлі тапсырыстар бекітілмеген.")
 
-# --- БЛОК 4: МЕНІҢ ЖАЛАҚЫМ ---
-elif choice == "💵 Менің жалақым":
-    my_id = st.session_state['user_id']
-    master_info = run_query("SELECT commission FROM users WHERE id=?", (my_id,)).iloc[0]
-    comm = master_info['commission']
-    st.subheader(f"💵 Сіздің жеке жалақыңыз (Ваша ставка: {comm*100}%)")
-    df_salary = run_query("SELECT id, device_model, work_cost, status FROM orders WHERE master_id=? AND status='Выдан'", (my_id,))
-    if not df_salary.empty:
-        df_salary['Мастер үлесі (₸)'] = df_salary['work_cost'] * comm
-        st.dataframe(df_salary, use_container_width=True, hide_index=True)
-        st.metric("Итого к выдаче:", f"{df_salary['Мастер үлесі (₸)'].sum():,.0f} ₸")
-
-# --- БЛОК 5: ПЕРСОНАЛ ---
-elif choice == "👥 Персонал (Админ)":
-    st.subheader("👥 Қызметкерлерді басқару")
-    df_users = run_query("SELECT id, username, full_name, role, commission FROM users")
-    st.dataframe(df_users, use_container_width=True, hide_index=True)
-
-# =====================================================================
-# БЛОК 6: СКЛАД (ИМПОРТ И ЭКСПОРТ)
-# =====================================================================
-elif choice == "📦 Қойма / Склад (Админ)":
-    st.subheader("📦 Қойманы басқару, Экспорт және Импорт")
-    
-    c_ex1, c_ex2 = st.columns(2)
-    with c_ex1:
-        st.markdown("#### 📤 Экспорт товаров из Склада")
-        df_for_export = run_query("SELECT item_name, item_type, quantity, purchase_price, retail_price FROM stock")
-        if not df_for_export.empty:
-            csv_data = df_for_export.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Скачать базу склада в Excel (CSV)",
-                data=csv_data,
-                file_name=f"stock_export_{datetime.now().strftime('%Y-%m-%d')}.csv",
-                mime="text/csv",
-                key="download-stock"
-            )
-        else: st.info("Экспорттайтын тауар жоқ.")
-        
-    with c_ex2:
-        st.markdown("#### 📥 Импорт товаров (Загрузка списка)")
-        st.caption("Файл должен содержать колонки: `item_name`, `item_type`, `quantity`, `purchase_price`, `retail_price`")
-        uploaded_stock_file = st.file_uploader("Выберите файл базы товаров (.csv)", type=["csv"], key="upload-stock-file")
-        
-        if uploaded_stock_file is not None:
-            try:
-                imported_df = pd.read_csv(uploaded_stock_file)
-                required_cols = ['item_name', 'item_type', 'quantity', 'purchase_price', 'retail_price']
-                if all(col in imported_df.columns for col in required_cols):
-                    if st.button("🚀 Начать импорт товаров в базу"):
-                        conn = sqlite3.connect(DB_NAME)
-                        cursor = conn.cursor()
-                        for _, row in imported_df.iterrows():
-                            cursor.execute("""
-                                INSERT INTO stock (item_name, item_type, quantity, purchase_price, retail_price) 
-                                VALUES(?, ?, ?, ?, ?)
-                                ON CONFLICT(item_name) DO UPDATE SET 
-                                    quantity = quantity + excluded.quantity,
-                                    purchase_price = excluded.purchase_price,
-                                    retail_price = excluded.retail_price
-                            """, (str(row['item_name']), str(row['item_type']), float(row['quantity']), float(row['purchase_price']), float(row['retail_price'])))
-                        conn.commit()
-                        conn.close()
-                        st.success(f"🎉 Сәтті! {len(imported_df)} тауар қоймаға жүктелді/жаңартылды.")
-                        st.rerun()
-                else:
-                    st.error(f"Қате! Файлда мына бағандар болуы тиіс: {required_cols}")
-            except Exception as e:
-                st.error(f"Файлды оқу қатесі: {e}")
-
-    st.markdown("---")
-    with st.expander("➕ Тауарды қолмен оприходовать ету (Штучный приход)"):
-        with st.form("add_stock_form", clear_on_submit=True):
-            s_name = st.text_input("Тауардың атауы (Наименование)*")
-            s_type = st.selectbox("Тип / Категория", ["Запчасти", "Расходные материалы", "Картриджи", "Другое"])
-            s_qty = st.number_input("Количество (шт)*", min_value=1.0, value=1.0, step=1.0)
-            s_p_price = st.number_input("Приходная цена (₸)*", min_value=0.0, value=0.0)
-            s_r_price = st.number_input("Розничная цена (₸)*", min_value=0.0, value=0.0)
-            
-            if st.form_submit_button("💾 Добавить на склад"):
-                if s_name:
-                    conn = sqlite3.connect(DB_NAME)
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        INSERT INTO stock (item_name, item_type, quantity, purchase_price, retail_price) 
-                        VALUES(?, ?, ?, ?, ?)
-                        ON CONFLICT(item_name) DO UPDATE SET 
-                            quantity = quantity + excluded.quantity,
-                            purchase_price = excluded.purchase_price,
-                            retail_price = excluded.retail_price
-                    """, (s_name, s_type, s_qty, s_p_price, s_r_price))
-                    conn.commit()
-                    conn.close()
-                    st.success(f"🎉 Товар '{s_name}' сәтті қосылды!")
-                    st.rerun()
-
-    st.markdown("### 📋 Қоймадағы тауарлардың ағымдағы қалдығы:")
-    df_stock = run_query("SELECT id, item_name as 'Наименование', item_type as 'Тип', quantity as 'Количество (шт)', purchase_price as 'Приходная цена', retail_price as 'Розничная цена' FROM stock")
-    if not df_stock.empty:
-        st.dataframe(df_stock, use_container_width=True, hide_index=True)
-
-# =====================================================================
-# БЛОК 7: КАТАЛОГ УСЛУГ (ИМПОРТ И ЭКСПОРТ)
-# =====================================================================
-elif choice == "🛠️ Қызметтер каталогы":
-    st.subheader("🛠️ Қызметтер мен Прайс-лист каталогы")
-    
-    c_ex3, c_ex4 = st.columns(2)
-    with c_ex3:
-        st.markdown("#### 📤 Экспорт каталога услуг")
-        df_serv_export = run_query("SELECT service_name, price FROM services_catalog")
-        if not df_serv_export.empty:
-            csv_serv_data = df_serv_export.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Скачать прайс-лист услуг (CSV)",
-                data=csv_serv_data,
-                file_name=f"services_export_{datetime.now().strftime('%Y-%m-%d')}.csv",
-                mime="text/csv",
-                key="download-services"
-            )
-        else: st.info("Экспорттайтын қызмет түрлері жоқ.")
-        
-    with c_ex4:
-        st.markdown("#### 📥 Импорт каталога услуг")
-        st.caption("Файл должен содержать колонки: `service_name`, `price`")
-        uploaded_services_file = st.file_uploader("Выберите файл прайса услуг (.csv)", type=["csv"], key="upload-services-file")
-        
-        if uploaded_services_file is not None:
-            try:
-                imported_serv_df = pd.read_csv(uploaded_services_file)
-                required_serv_cols = ['service_name', 'price']
-                if all(col in imported_serv_df.columns for col in required_serv_cols):
-                    if st.button("🚀 Начать импорт услуг в базу"):
-                        conn = sqlite3.connect(DB_NAME)
-                        cursor = conn.cursor()
-                        for _, row in imported_serv_df.iterrows():
-                            cursor.execute("""
-                                INSERT INTO services_catalog (service_name, price) 
-                                VALUES(?, ?)
-                                ON CONFLICT(service_name) DO UPDATE SET 
-                                    price = excluded.price
-                            """, (str(row['service_name']), float(row['price'])))
-                        conn.commit()
-                        conn.close()
-                        st.success(f"🎉 Сәтті! {len(imported_serv_df)} қызмет түрі прайс-листке жүктелді/жаңартылды.")
-                        st.rerun()
-                else:
-                    st.error(f"Қате! Файлда мына бағандар болуы тиіс: {required_serv_cols}")
-            except Exception as e:
-                st.error(f"Файлды оқу қатесі: {e}")
-
-    st.markdown("---")
-    with st.expander("➕ Жаңа қызмет түрін қолмен қосу"):
-        with st.form("add_service_catalog_form", clear_on_submit=True):
-            serv_name = st.text_input("Қызмет атауы (Название услуги)*")
-            serv_price = st.number_input("Қызмет құны (₸)*", min_value=0.0, value=0.0)
-            if st.form_submit_button("💾 Сақтау"):
-                if serv_name:
-                    run_query("INSERT OR IGNORE INTO services_catalog (service_name, price) VALUES (?, ?)", (serv_name, serv_price), is_select=False)
-                    st.success("Услуга добавлена в каталог!")
-                    st.rerun()
-
-    df_serv_cat = run_query("SELECT id, service_name as 'Название услуги', price as 'Цена услуги (₸)' FROM services_catalog")
-    if not df_serv_cat.empty:
-        st.dataframe(df_serv_cat, use_container_width=True, hide_index=True)
-
-# --- БЛОК 8: КАССА ---
-elif choice == "💰 Касса (Админ)":
-    st.subheader("💰 Сервистік орталықтың кассасы")
-    df_cash = run_query("SELECT * FROM cashbox ORDER BY id DESC")
-    if not df_cash.empty:
-        st.dataframe(df_cash, use_container_width=True, hide_index=True)
+else:
+    st.info("Бұл бөлім әлі өңделу үстінде немесе таңдалған рөлге қолжетімсіз.")
