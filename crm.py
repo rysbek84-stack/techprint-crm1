@@ -35,7 +35,7 @@ def init_db():
             created_at TEXT,
             stock_deducted BOOLEAN DEFAULT 0,
             rejected_at TEXT DEFAULT NULL,
-            pickup_deadline TEXT DEFAULT NULL
+            pickup_deadline TEXT DEFAULT NULL 
         )
     ''')
     
@@ -302,7 +302,7 @@ elif choice == "📝 Тапсырыстар":
                 st.markdown("#### 📱 Клиентпен бағаны келісу және Төлем сілтемелері:")
                 
                 # Замените этот URL на адрес вашей развернутой CRM (например, https://mycrm.streamlit.app)
-                base_url = "http://localhost:8501" 
+                base_url = "https://crm-techprint.streamlit.app"
                 
                 link_approve_crm = f"{base_url}/?action=approve&order_id={sel_id}"
                 link_reject_crm = f"{base_url}/?action=reject&order_id={sel_id}"
