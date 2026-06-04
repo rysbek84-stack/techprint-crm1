@@ -137,7 +137,7 @@ def send_telegram_with_buttons(order_id, device, cost):
     except Exception: pass
 
 # --- СТИЛИЗАЦИЯ И ИНТЕРФЕЙС ---
-st.set_page_config(page_title="Оргтехника CRM KAZ", layout="wide")
+st.set_page_config(page_title="TechPrint.kz CRM KAZ", layout="wide")
 
 st.markdown("""
     <style>
@@ -158,7 +158,7 @@ def show_print_receipt(order):
     debt = total - order['paid_amount']
     st.html(f"""
     <div style="padding: 20px; font-family: 'Inter', sans-serif; color: black; background: white; border: 1px solid #ccc;">
-        <h2 style="text-align: center; margin-bottom: 2px;">🔧 СЦ ОРГТЕХНИКА</h2>
+        <h2 style="text-align: center; margin-bottom: 2px;">🔧 СЕРВИС ОРТАЛЫК TechPrint.kz</h2>
         <p style="text-align: center; margin-top: 0; font-size: 13px; color: #555555;">Уақыты: {order['created_at']}</p>
         <hr style="border-top: 2px dashed black;">
         <h3 style="text-align: center;">ТАПСЫРЫС № {order['id']}</h3>
