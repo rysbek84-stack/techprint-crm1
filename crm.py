@@ -83,7 +83,9 @@ def init_db():
     if cursor.fetchone()[0] == 0:
         cursor.execute("INSERT INTO users (username, password, full_name, role, commission) VALUES ('admin', 'admin', 'Администратор (Директор)', 'Директор', 0.0)")
         cursor.execute("INSERT INTO users (username, password, full_name, role, commission) VALUES ('reception', '123', 'Алия (Ресепшен)', 'Ресепшен', 0.0)")
-    
+    # Добавляем дефолтного мастера:
+        cursor.execute("INSERT INTO users (username, password, full_name, role, commission) VALUES ('master1', '123', 'Иван (Мастер)', 'Мастер', 0.40)")
+        
     # Базовый прайс-лист услуг
     cursor.execute("SELECT COUNT(*) FROM services_catalog")
     if cursor.fetchone()[0] == 0:
