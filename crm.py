@@ -17,10 +17,9 @@ KASPI_PAY_ID = "orgtechnika_shymkent"
 TELEGRAM_BOT_TOKEN = "ВАШ_ТОКЕН_БОТА" 
 YOUR_CHAT_ID = "ВАШ_ЧАТ_ID" 
 
-# --- ФУНКЦИЯ ПАРСИНГА ТОВАРОВ С COPYLINE.KZ ---
+# --- УЛУЧШЕННАЯ И ДОПОЛНЕННАЯ ФУНКЦИЯ ПАРСИНГА (КАРТОЧКА + КАТАЛОГ) ---
 def parse_copyline_product(url):
     try:
-        # Установка User-Agent для обхода защиты сайта от ботов
         req = urllib.request.Request(
             url, 
             headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
@@ -28,23 +27,65 @@ def parse_copyline_product(url):
         with urllib.request.urlopen(req, timeout=10) as response:
             html = response.read().decode('utf-8')
         
-        # 1. Извлечение Названия (H1)
-        title_match = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.IGNORECASE | re.DOTALL)
-        title = title_match.group(1).strip() if title_match else "Неизвестный товар"
-        
-        # 2. Извлечение Цены
-        price_match = re.search(r'class="price"[^>]*>([\d\s]+)', html, re.IGNORECASE)
-        if price_match:
-            price = float(price_match.group(1).replace(" ", "").strip())
-        else:
-            price = 0.0
+        parsed_uri = urllib.parse.urlparse(url)
+        base_domain = f"{parsed_uri.scheme}://{parsed_uri.netloc}"
 
-        # 3. Извлечение категории (Хлебные крошки)
+        # Проверяем, является ли страница КАТАЛОГОМ (списком товаров)
+        if 'class="product-item"' in html or 'class="product"' in html or 'class="catalog-item"' in html:
+            # Поиск всех блоков товаров в каталоге
+            blocks = re.findall(r'<div[^>]+class="[^"]*product-item[^"]*"[^>]*>(.*?)<!--\s*/product-item\s*-->', html, re.DOTALL)
+            if not blocks:
+                blocks = re.findall(r'<div[^>]+class="[^"]*product_holder[^"]*"[^>]*>(.*?)</div>\s*</div>\s*</div>', html, re.DOTALL)
+            
+            products_found = []
+            
+            for block in blocks:
+                # Извлекаем ссылку на фото
+                img_m = re.search(r'<img[^>]+src="([^"]+)"', block)
+                img_url = img_m.group(1) if img_m else ""
+                if img_url and not img_url.startswith('http'): 
+                    img_url = base_domain + img_url
+                
+                # Извлекаем название товара и очищаем от HTML-тегов
+                name_m = re.search(r'class="name"[^>]*>(.*?)</a>', block, re.DOTALL)
+                if not name_m: 
+                    name_m = re.search(r'<a[^>]+href="/goods/[^"]+"[^>]*>([^<]+)</a>', block)
+                
+                if name_m:
+                    raw_name = re.sub(r'<[^>]+>', '', name_m.group(1)).strip()
+                    # Регулярное выражение для очистки от артикулов в начале и скобок в конце
+                    clean_name = re.sub(r'^[A-Za-z0-9\-\.\s]{4,15}(?=\s)', '', raw_name).strip()
+                    clean_name = re.sub(r'\s*\[.*?\]|\s*\(.*?\)', '', clean_name).strip()
+                else:
+                    continue
+                    
+                # Извлекаем цену товара
+                price_m = re.search(r'class="price"[^>]*>([\d\s]+)', block)
+                price = float(price_m.group(1).replace(" ", "").strip()) if price_m else 0.0
+                
+                products_found.append({
+                    "title": clean_name, 
+                    "price": price, 
+                    "type": "Запчасти (Каталог)", 
+                    "image": img_url
+                })
+
+            if products_found:
+                return {"success": True, "is_list": True, "products": products_found}
+
+        # --- СЦЕНАРИЙ ОДИНОЧНОЙ КАРТОЧКИ ТОВАРА ---
+        title_match = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.IGNORECASE | re.DOTALL)
+        title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip() if title_match else "Неизвестный товар"
+        # Очистка названия карточки от артикулов
+        title = re.sub(r'^[A-Za-z0-9\-\.\s]{4,15}(?=\s)', '', title).strip()
+        title = re.sub(r'\s*\([^)]*\)\s*$', '', title).strip()
+
+        price_match = re.search(r'class="price"[^>]*>([\d\s]+)', html, re.IGNORECASE)
+        price = float(price_match.group(1).replace(" ", "").strip()) if price_match else 0.0
+
         category_match = re.findall(r'<span itemprop="name">(.*?)</span>', html)
         item_type = category_match[-2].strip() if len(category_match) >= 2 else "Запчасти"
         
-        # 4. Извлечение Ссылки на Фотографию
-        # Ищет главное изображение в галерее или блоке карточки
         img_match = re.search(r'<a[^>]+href="([^"]+\.(?:jpg|jpeg|png))"[^>]+data-fancybox="gallery"', html, re.IGNORECASE)
         if not img_match:
             img_match = re.search(r'<img[^>]+src="([^"]+\.(?:jpg|jpeg|png))"[^>]+id="main-image"', html, re.IGNORECASE)
@@ -53,10 +94,13 @@ def parse_copyline_product(url):
         if img_match:
             img_url = img_match.group(1).strip()
             if img_url.startswith('/'):
-                parsed_uri = urllib.parse.urlparse(url)
-                img_url = f"{parsed_uri.scheme}://{parsed_uri.netloc}{img_url}"
+                img_url = f"{base_domain}{img_url}"
                 
-        return {"success": True, "title": title, "price": price, "type": item_type, "image": img_url}
+        return {
+            "success": True, 
+            "is_list": False, 
+            "products": [{"title": title, "price": price, "type": item_type, "image": img_url}]
+        }
     except Exception as e:
         return {"success": False, "error": str(e)}
 
@@ -126,7 +170,7 @@ def init_db():
         cursor.execute("INSERT INTO users (username, password, full_name, role, commission) VALUES ('reception', '123', 'Алия (Ресепшен)', 'Ресепшен', 0.0)")
         cursor.execute("INSERT INTO users (username, password, full_name, role, commission) VALUES ('master1', '123', 'Ислам (Мастер)', 'Мастер', 0.40)")
         
-    # Базовый прайс-лист услуг (ИСПРАВЛЕНО: Добавлены пропущенные запятые)
+    # Базовый прайс-лист услуг
     cursor.execute("SELECT COUNT(*) FROM services_catalog")
     if cursor.fetchone()[0] == 0:
         base_services = [
@@ -433,7 +477,7 @@ if app_mode == "📱 Личный кабинет клиента":
                 st.warning(f"📋 СІЗДІҢ ТРЕК/КВИТАНЦИЯ НӨМІРІҢІЗ: {rec_no}")
                 st.balloons()
             else:
-                st.error("Барлық міндетті өрістерді толтырыңыз!")
+                st.error("Barslyq міндетті өрістерді толтырыңыз!")
                 
     with tab_web1:
         st.markdown("### 🔑 Жөндеу тарихын және барлық тапсырыстарды көру")
@@ -738,54 +782,49 @@ elif choice == "👥 Персонал (Админ)":
             st.success("Қызметкер сәтті өшірілді!")
             st.rerun()
 
-# --- БЛОК 4: СКЛАД (С ПАРСЕРОМ ТОВАРОВ И ФОТО) ---
+# --- БЛОК 4: СКЛАД (ИНТЕГРАЦИЯ С НОВЫМ УМНЫМ ПАРСЕРОМ КАТАЛОГОВ) ---
 elif "Қойма / Склад" in choice:
     st.subheader("📦 Қойма / Склад")
     
-    # ИНТЕГРАЦИЯ ПАРСЕРА КАТАЛОГА В СТРИМЛИТ ВЕРХНЕЙ ПАНЕЛЬЮ
     if st.session_state['role'] == "Директор":
-        with st.expander("🔍 Авто-парсер каталога товаров (с сайта CopyLine.kz)"):
-            st.markdown("Вставьте ссылку на любой товар с сайта `copyline.kz`, система вытащит данные и фото автоматически.")
-            parse_url = st.text_input("Ссылка на товар:", placeholder="https://copyline.kz/goods/...")
+        with st.expander("🔍 Авто-парсер товаров (Карточки и Каталоги с CopyLine.kz)"):
+            st.markdown("Сюда можно вставлять **ссылку на один товар** или **ссылку на весь каталог** (например: `https://copyline.kz/goods/rollers.html`)")
+            parse_url = st.text_input("Ссылка для парсинга:", placeholder="https://copyline.kz/goods/...")
             
-            if st.button("Распознать товар по ссылке", type="secondary"):
+            if st.button("Запустить умный парсинг", type="primary"):
                 if parse_url:
-                    with st.spinner("Загрузка и парсинг страницы..."):
-                        product_data = parse_copyline_product(parse_url)
+                    with st.spinner("Считывание структуры страницы и очистка от артикулов..."):
+                        res = parse_copyline_product(parse_url)
                     
-                    if product_data["success"]:
-                        st.success("Данные успешно извлечены!")
-                        col_p1, col_p2 = st.columns([1, 2])
+                    if res["success"]:
+                        products = res["products"]
+                        st.success(f"Успешно обработано позиций: {len(products)}")
                         
-                        with col_p1:
-                            if product_data["image"]:
-                                st.image(product_data["image"], width=200, caption="Фото из каталога")
-                            else:
-                                st.info("Изображение не найдено")
-                        
-                        with col_p2:
-                            st.write(f"**Название:** {product_data['title']}")
-                            st.write(f"**Тип товара:** {product_data['type']}")
-                            st.write(f"**Определенная цена:** {product_data['price']:,.0f} ₸")
-                        
-                        # Кнопка быстрой вставки в базу CRM
-                        st.markdown("#### Сохранить спарсенный товар на склад:")
-                        with st.form("save_parsed_form"):
-                            f_name = st.text_input("Название для базы", value=product_data['title'])
-                            f_type = st.text_input("Тип/Категория", value=product_data['type'])
-                            f_qty = st.number_input("Количество (шт)", value=5, min_value=1)
-                            f_price_in = st.number_input("Закуп цена (₸)", value=float(product_data['price'] * 0.7))
-                            f_price_out = st.number_input("Розничная цена (₸)", value=float(product_data['price']))
-                            
-                            if st.form_submit_button("➕ Занести в базу CRM"):
-                                run_query(
-                                    "INSERT OR REPLACE INTO stock (item_name, item_type, quantity, purchase_price, retail_price) VALUES (?,?,?,?,?)",
-                                    (f_name, f_type, f_qty, f_price_in, f_price_out), is_select=False
-                                )
-                                st.success(f"Товар '{f_name}' добавлен на склад!")
-                                st.rerun()
+                        # Выводим все найденные товары в аккуратных контейнерах с индивидуальным добавлением
+                        for idx, prod in enumerate(products):
+                            with st.container(border=True):
+                                col_p1, col_p2, col_p3 = st.columns([1, 3, 2])
+                                with col_p1:
+                                    if prod["image"]: st.image(prod["image"], width=90)
+                                    else: st.caption("Нет фото")
+                                with col_p2:
+                                    st.markdown(f"**Наименование:** {prod['title']}")
+                                    st.write(f"Категория: {prod['type']}")
+                                with col_p3:
+                                    st.markdown(f"**Цена:** {prod['price']:,.0f} ₸")
+                                    
+                                    # Форма индивидуального сохранения для каждой извлеченной позиции
+                                    with st.form(f"save_prod_{idx}"):
+                                        f_qty = st.number_input("Кол-во (шт)", value=5, min_value=1, key=f"q_{idx}")
+                                        f_in = st.number_input("Закуп (₸)", value=float(prod['price'] * 0.7), key=f"i_{idx}")
+                                        if st.form_submit_button("➕ Добавить на склад", use_container_width=True):
+                                            run_query(
+                                                "INSERT OR REPLACE INTO stock (item_name, item_type, quantity, purchase_price, retail_price) VALUES (?,?,?,?,?)",
+                                                (prod['title'], prod['type'], f_qty, f_in, prod['price']), is_select=False
+                                            )
+                                            st.toast(f"Товар '{prod['title']}' добавлен!")
                     else:
-                        st.error(f"Ошибка при парсинге: {product_data['error']}")
+                        st.error(f"Ошибка парсера: {res['error']}")
                 else:
                     st.warning("Введите рабочую ссылку!")
 
