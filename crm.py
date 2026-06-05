@@ -660,8 +660,37 @@ elif choice == "📝 Тапсырыстар":
 
 # --- БЛОК 3: ПЕРСОНАЛ ---
 elif choice == "👥 Персонал (Админ)":
-    st.subheader("👥 Управление персоналом")
-    # ... (Остается без изменений)
+    st.subheader("👥 Персоналды басқару")
+    tab1, tab2 = st.tabs(["➕ Жаңа қызметкер қосу", "📋 Тізім және Өшіру"])
+    
+    with tab1:
+        with st.form("add_user"):
+            username = st.text_input("Логин")
+            password = st.text_input("Пароль", type="password")
+            full_name = st.text_input("Толық аты-жөні")
+            role = st.selectbox("Рөлі", ["Директор", "Ресепшен", "Мастер"])
+            commission = st.number_input("Комиссия (мастер үшін)", value=0.40, min_value=0.0, max_value=1.0)
+            if st.form_submit_button("Сақтау"):
+                if username and password and full_name:
+                    try:
+                        run_query("INSERT INTO users (username, password, full_name, role, commission) VALUES (?,?,?,?,?)", 
+                                  (username, password, full_name, role, commission), is_select=False)
+                        st.success("Қызметкер қосылды!")
+                        st.rerun()
+                    except Exception as e: st.error(f"Қате: {e}")
+    with tab2:
+        df_u = run_query("SELECT id, username, full_name, role, commission FROM users")
+        st.dataframe(df_u, use_container_width=True)
+        
+        st.markdown("#### ❌ Қызметкерді өшіру")
+        del_options = df_u.apply(lambda r: f"ID: {r['id']} | {r['full_name']} ({r['role']})", axis=1).tolist()
+        user_to_delete = st.selectbox("Өшіру үшін таңдаңыз:", del_options)
+        if st.button("❌ Таңдалған қызметкерді жүйеден өшіру", type="primary"):
+            target_id = int(user_to_delete.split(" ")[2])
+            run_query("DELETE FROM users WHERE id=?", (target_id,), is_select=False)
+            st.success("Қызметкер сәтті өшірілді!")
+            st.rerun()
+            
 
 # --- БЛОК 4: СКЛАД ---
 elif "Қойма / Склад" in choice:
@@ -720,4 +749,14 @@ elif choice == "🛠️ Қызметтер каталогы":
 elif choice == "💰 Касса (Админ)":
     st.subheader("💰 Сервистік орталықтың кассасы")
     df_cash = run_query("SELECT id, op_type, amount, description, created_at FROM cashbox ORDER BY id DESC")
+    
+    # --- Экспорт кассовой книги в Excel ---
+    if not df_cash.empty:
+        buffer_cash = io.BytesIO()
+        with pd.ExcelWriter(buffer_cash, engine='xlsxwriter') as writer:
+            df_cash.to_excel(writer, index=False, sheet_name='Касса')
+        st.download_button(label="📥 Касса тарихын Excel-ге жүктеу", data=buffer_cash.getvalue(), file_name="cashbox.xlsx", mime="application/vnd.ms-excel")
+        st.markdown("---")
+
     st.dataframe(df_cash, use_container_width=True)
+    st.metric("Кассадағы жалпы нақты баланс", f"{df_cash[df_cash['op_type']=='Доход']['amount'].sum() - df_cash[df_cash['op_type']=='Расход']['amount'].sum():,.0f} ₸")
