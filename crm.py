@@ -9,7 +9,7 @@ import random
 import io
 
 # Новая версия БД, чтобы применились все изменения и дефолтные настройки
-DB_NAME = "service_center_crm_v3_final.db"
+DB_NAME = "service_center_crm_v4_final.db"
 KASPI_PAY_ID = "orgtechnika_shymkent" 
 
 # --- ОБЯЗАТЕЛЬНО ЗАПОЛНИТЕ ДЛЯ АВТО-СОГЛАСОВАНИЯ ЧЕРЕЗ ТГ ---
@@ -372,7 +372,25 @@ if choice == "📊 Басты бет & Аналитика":
         c1, c2, c3 = st.columns(3)
         with c1: st.markdown(f'<div class="metric-card"><div class="metric-title">Жалпы чек сомасы</div><div class="metric-value">{total_rev:,.0f} ₸</div></div>', unsafe_allow_html=True)
         with c2: st.markdown(f'<div class="metric-card"><div class="metric-title">Барлық Төленген</div><div class="metric-value">{total_paid:,.0f} ₸</div></div>', unsafe_allow_html=True)
-        with c3: st.markdown(f'<div class="metric-card"><div class="metric-title" style="color:#16a34a;">Tapaza Paida SC</div><div class="metric-value" style="color:#16a34a;">{net_profit:,.0f} ₸</div></div>', unsafe_allow_html=True)
+        with c3: st.markdown(f'<div class="metric-card"><div class="metric-title" style="color:#16a34a;">Таза Пайда СЦ</div><div class="metric-value" style="color:#16a34a;">{net_profit:,.0f} ₸</div></div>', unsafe_allow_html=True)
+
+    # --- Новая функция: Подсчет зарплаты мастеров ---
+    st.markdown("---")
+    st.subheader("👨‍🔧 Шеберлердің еңбекақысын есептеу (Зарплата мастеров)")
+    df_masters_salary = run_query("""
+        SELECT u.full_name as master_name, 
+               u.commission,
+               SUM(o.work_cost) as total_work_revenue,
+               SUM(o.work_cost * u.commission) as salary_earned
+        FROM orders o 
+        JOIN users u ON o.master_id = u.id 
+        WHERE o.status IN ('Готов', 'Выдан')
+        GROUP BY u.id
+    """)
+    if not df_masters_salary.empty:
+        st.dataframe(df_masters_salary, use_container_width=True)
+    else:
+        st.info("Дайын немесе тапсырылған жұмыстар бойынша әлі шеберлерге есептелген еңбекақы жоқ.")
 
 # --- БЛОК 2: ТАПСЫРЫСТАР ---
 elif choice == "📝 Тапсырыстар":
@@ -403,7 +421,15 @@ elif choice == "📝 Тапсырыстар":
                     st.rerun()
 
     res_orders = run_query("SELECT o.*, u.full_name as master_name FROM orders o LEFT JOIN users u ON o.master_id = u.id ORDER BY o.id DESC")
+    
+    # --- Новая функция: Экспорт всех заказов в Excel ---
     if not res_orders.empty:
+        buffer_orders = io.BytesIO()
+        with pd.ExcelWriter(buffer_orders, engine='xlsxwriter') as writer:
+            res_orders.to_excel(writer, index=False, sheet_name='Заказы')
+        st.download_button(label="📥 Барлық тапсырыстарды Excel-ге жүктеу", data=buffer_orders.getvalue(), file_name="all_orders.xlsx", mime="application/vnd.ms-excel")
+        st.markdown("---")
+
         list_options = res_orders.apply(lambda r: f"№{r['id']} ({r['receipt_number'] if r['receipt_number'] else 'Бор'}) | {r['client_name']} — {r['device_model']} [{r['status']}]", axis=1).tolist()
         sel_order_text = st.selectbox("Өңдеу үшін тапсырысты таңдаңыз:", list_options)
         sel_id = int(sel_order_text.split(" ")[0].replace("№", ""))
@@ -529,7 +555,8 @@ elif choice == "📝 Тапсырыстар":
                     run_query("UPDATE orders SET stock_deducted = 1 WHERE id = ?", (sel_id,), is_select=False)
                     st.toast(f"📦 Товар списан со склада (1 шт)!")
 
-                log_comment = f"[{time_now}] Статус: {u_status}. Деталь: {sel_part}, Работа: {sel_service}. Чек: {total_bill} ₸.\n"
+                # --- Новая функция: Подробная история логирования изменений ---
+                log_comment = f"[{time_now}] Статус өзгерді: {order_data['status']} -> {u_status}. Төленді: {u_paid} ₸. Қосалқы бөлшек: {sel_part}, Қызмет: {sel_service}.\n"
                 new_history = (order_data['history'] if order_data['history'] else "") + log_comment
                 
                 if u_paid != order_data['paid_amount']:
@@ -627,6 +654,14 @@ elif choice == "🛠️ Қызметтер каталогы":
 elif choice == "💰 Касса (Админ)":
     st.subheader("💰 Сервистік орталықтың кассасы")
     df_cash = run_query("SELECT id, op_type, amount, description, created_at FROM cashbox ORDER BY id DESC")
-    st.dataframe(df_cash, use_container_width=True)
     
+    # --- Новая функция: Экспорт кассовой книги в Excel ---
+    if not df_cash.empty:
+        buffer_cash = io.BytesIO()
+        with pd.ExcelWriter(buffer_cash, engine='xlsxwriter') as writer:
+            df_cash.to_excel(writer, index=False, sheet_name='Касса')
+        st.download_button(label="📥 Касса тарихын Excel-ге жүктеу", data=buffer_cash.getvalue(), file_name="cashbox.xlsx", mime="application/vnd.ms-excel")
+        st.markdown("---")
+
+    st.dataframe(df_cash, use_container_width=True)
     st.metric("Кассадағы жалпы нақты баланс", f"{df_cash[df_cash['op_type']=='Доход']['amount'].sum() - df_cash[df_cash['op_type']=='Расход']['amount'].sum():,.0f} ₸")
