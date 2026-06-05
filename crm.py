@@ -7,14 +7,19 @@ import urllib.parse
 import json
 import random
 import io
+import plotly.express as px
 
 # Новая версия БД, чтобы применились все изменения и дефолтные настройки
-DB_NAME = "service_center_crm_v3_final.db"
+DB_NAME = "service_center_crm_v4_final.db"
 KASPI_PAY_ID = "orgtechnika_shymkent" 
 
 # --- ОБЯЗАТЕЛЬНО ЗАПОЛНИТЕ ДЛЯ АВТО-СОГЛАСОВАНИЯ ЧЕРЕЗ ТГ ---
 TELEGRAM_BOT_TOKEN = "ВАШ_ТОКЕН_БОТА" 
 YOUR_CHAT_ID = "ВАШ_ЧАТ_ID" 
+
+# Логин и пароль от шлюза SMSC.KZ для отправки реальных SMS
+SMSC_LOGIN = "ваш_логин_на_smsc.kz"
+SMSC_PASSWORD = "ваш_пароль_или_api_ключ"
 
 # --- ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ---
 def init_db():
@@ -69,9 +74,12 @@ def init_db():
     cursor.execute('CREATE TABLE IF NOT EXISTS cashbox (id INTEGER PRIMARY KEY AUTOINCREMENT, op_type TEXT, amount REAL, description TEXT, created_at TEXT)')
     cursor.execute('CREATE TABLE IF NOT EXISTS clients_web (phone TEXT PRIMARY KEY, name TEXT, password TEXT)')
     
+    # SQL-индексы для оптимизации и ускорения работы базы данных
     try:
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_stock_item_name ON stock(item_name)")
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_services_name ON services_catalog(service_name)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_phone ON orders(phone)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status)")
     except sqlite3.OperationalError:
         pass
 
@@ -118,6 +126,25 @@ def generate_receipt_number():
     current_year = datetime.now().year
     random_num = random.randint(1000, 9999)
     return f"TP-{current_year}-{random_num}"
+
+def send_real_sms(phone, text):
+    """Автоматическая отправка SMS через шлюз SMSC.KZ"""
+    if SMSC_LOGIN == "ваш_логин_на_smsc.kz": return False
+    clean_phone = str(phone).replace("+", "").replace(" ", "").replace("-", "")
+    params = {
+        'login': SMSC_LOGIN,
+        'psw': SMSC_PASSWORD,
+        'phones': clean_phone,
+        'mes': text,
+        'charset': 'utf-8'
+    }
+    encoded_params = urllib.parse.urlencode(params)
+    url = f"https://smsc.kz/sys/send.php?{encoded_params}"
+    try:
+        urllib.request.urlopen(url, timeout=5)
+        return True
+    except Exception:
+        return False
 
 # --- ОБРАБОТЧИК АВТОМАТИЧЕСКИХ ССЫЛОК ИЗ WHATSAPP ---
 if "action" in st.query_params and "order_id" in st.query_params:
@@ -186,7 +213,7 @@ def send_telegram_with_buttons(order_id, device, cost):
     }
     encoded_text = urllib.parse.quote(text)
     encoded_markup = urllib.parse.quote(json.dumps(reply_markup))
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage?chat_id={YOUR_CHAT_ID}&text={encoded_text}&reply_markup={encoded_markup}"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage?chat_id={YOUR_CHAT_ID}/sendMessage?chat_id={YOUR_CHAT_ID}&text={encoded_text}&reply_markup={encoded_markup}"
     try: urllib.request.urlopen(url, timeout=5)
     except Exception: pass
 
@@ -349,6 +376,7 @@ if st.sidebar.button("Шығу / Выйти", type="secondary", use_container_wi
 
 st.sidebar.markdown("---")
 
+# Динамическое меню на основе роли (как в вашем коде)
 if st.session_state['role'] == "Директор":
     menu = ["📊 Басты бет & Аналитика", "📝 Тапсырыстар", "👥 Персонал (Админ)", "📦 Қойма / Склад (Админ)", "🛠️ Қызметтер каталогы", "💰 Касса (Админ)"]
 elif st.session_state['role'] == "Ресепшен":
@@ -358,10 +386,10 @@ elif st.session_state['role'] == "Мастер":
 
 choice = st.sidebar.radio("Мәзір / Меню", menu)
 
-# --- БЛОК 1: АНАЛИТИКА ---
+# --- БЛОК 1: АНАЛИТИКА + ВИЗУАЛИЗАЦИЯ ---
 if choice == "📊 Басты бет & Аналитика":
     st.subheader("📊 Сервистік орталықтың жалпы көрсеткіштері")
-    df_all = run_query("SELECT o.work_cost, o.parts_cost, o.paid_amount, u.commission FROM orders o LEFT JOIN users u ON o.master_id = u.id")
+    df_all = run_query("SELECT o.work_cost, o.parts_cost, o.paid_amount, o.status, o.created_at, u.commission FROM orders o LEFT JOIN users u ON o.master_id = u.id")
     if not df_all.empty:
         total_rev = df_all['work_cost'].sum() + df_all['parts_cost'].sum()
         total_paid = df_all['paid_amount'].sum()
@@ -372,36 +400,56 @@ if choice == "📊 Басты бет & Аналитика":
         with c1: st.markdown(f'<div class="metric-card"><div class="metric-title">Жалпы чек сомасы</div><div class="metric-value">{total_rev:,.0f} ₸</div></div>', unsafe_allow_html=True)
         with c2: st.markdown(f'<div class="metric-card"><div class="metric-title">Барлық Төленген</div><div class="metric-value">{total_paid:,.0f} ₸</div></div>', unsafe_allow_html=True)
         with c3: st.markdown(f'<div class="metric-card"><div class="metric-title" style="color:#16a34a;">Tapaza Paida SC</div><div class="metric-value" style="color:#16a34a;">{net_profit:,.0f} ₸</div></div>', unsafe_allow_html=True)
+        
+        # Интерактивные графики Plotly
+        st.markdown("---")
+        st.subheader("📈 Графический анализ СЦ")
+        col_ch1, col_ch2 = st.columns(2)
+        with col_ch1:
+            df_status = df_all['status'].value_counts().reset_index()
+            df_status.columns = ['Статус', 'Количество']
+            fig_pie = px.pie(df_status, values='Количество', names='Статус', title="Структура заказов по статусам", hole=0.3)
+            st.plotly_chart(fig_pie, use_container_width=True)
+        with col_ch2:
+            fig_bars = px.bar(x=['Услуги', 'Запчасти'], y=[df_all['work_cost'].sum(), df_all['parts_cost'].sum()], title="Соотношение доходов: Работы vs Запчасти", labels={'x':'Категория', 'y':'Сумма (₸)'}, color=['Работы', 'Запчасти'])
+            st.plotly_chart(fig_bars, use_container_width=True)
 
-# --- БЛОК 2: ТАПСЫРЫСТАР ---
-elif choice == "📝 Тапсырыстар":
+# --- БЛОК 2: ТАПСЫРЫСТАР (И ЛИЧНЫЕ ЗАКАЗЫ МАСТЕРОВ) ---
+elif choice in ["📝 Тапсырыстар", "🛠️ Менің тапсырыстарым"]:
     st.subheader("📝 Тапсырыстарды басқару жүйесі")
     
-    with st.expander("➕ Жаңа тапсырыс қосу"):
-        with st.form("add_order_form", clear_on_submit=True):
-            c_name = st.text_input("Клиент аты*")
-            c_phone = st.text_input("Telephone*")
-            d_model = st.text_input("Аппарат үлгісі*")
-            s_num = st.text_input("S/N")
-            is_cart = st.checkbox("Картридж")
-            
-            masters_df = run_query("SELECT id, full_name FROM users WHERE role='Мастер'")
-            m_options = {row['full_name']: row['id'] for _, row in masters_df.iterrows()}
-            m_options["Шебер тағайындалмады"] = None
-            selected_m_name = st.selectbox("Шеберді таңдаңыз", list(m_options.keys()))
-            desc = st.text_area("Ақаулық сипаттамасы")
-            
-            if st.form_submit_button("💾 Тапсырысты сақтау"):
-                if c_name and c_phone and d_model:
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    rec_no = generate_receipt_number()
-                    init_history = f"[{now_str}] Тапсырыс қабылданды (Ресепшен). Трек-номер: {rec_no}\n"
-                    run_query('''INSERT INTO orders (client_name, phone, device_model, serial_number, is_cartridge, description, status, master_id, created_at, receipt_number, history)
-                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (c_name, c_phone, d_model, s_num, is_cart, desc, "Принят", m_options[selected_m_name], now_str, rec_no, init_history), is_select=False)
-                    st.success(f"Тапсырыс қосылды! Квитанция/Трек нөмірі: {rec_no}")
-                    st.rerun()
+    # Только Ресепшен и Директор могут создавать новые заказы
+    if st.session_state['role'] != "Мастер":
+        with st.expander("➕ Жаңа тапсырыс қосу"):
+            with st.form("add_order_form", clear_on_submit=True):
+                c_name = st.text_input("Клиент аты*")
+                c_phone = st.text_input("Telephone*")
+                d_model = st.text_input("Аппарат үлгісі*")
+                s_num = st.text_input("S/N")
+                is_cart = st.checkbox("Картридж")
+                
+                masters_df = run_query("SELECT id, full_name FROM users WHERE role='Мастер'")
+                m_options = {row['full_name']: row['id'] for _, row in masters_df.iterrows()}
+                m_options["Шебер тағайындалмады"] = None
+                selected_m_name = st.selectbox("Шеберді таңдаңыз", list(m_options.keys()))
+                desc = st.text_area("Ақаулық сипаттамасы")
+                
+                if st.form_submit_button("💾 Тапсырысты сақтау"):
+                    if c_name and c_phone and d_model:
+                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+                        rec_no = generate_receipt_number()
+                        init_history = f"[{now_str}] Тапсырыс қабылданды (Ресепшен). Трек-номер: {rec_no}\n"
+                        run_query('''INSERT INTO orders (client_name, phone, device_model, serial_number, is_cartridge, description, status, master_id, created_at, receipt_number, history)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (c_name, c_phone, d_model, s_num, is_cart, desc, "Принят", m_options[selected_m_name], now_str, rec_no, init_history), is_select=False)
+                        st.success(f"Тапсырыс қосылды! Квитанция/Трек нөмірі: {rec_no}")
+                        st.rerun()
 
-    res_orders = run_query("SELECT o.*, u.full_name as master_name FROM orders o LEFT JOIN users u ON o.master_id = u.id ORDER BY o.id DESC")
+    # Фильтруем вывод данных: мастер видит только свое, остальные — всё
+    if st.session_state['role'] == "Мастер":
+        res_orders = run_query("SELECT o.*, u.full_name as master_name FROM orders o LEFT JOIN users u ON o.master_id = u.id WHERE o.master_id = ? ORDER BY o.id DESC", (st.session_state['user_id'],))
+    else:
+        res_orders = run_query("SELECT o.*, u.full_name as master_name FROM orders o LEFT JOIN users u ON o.master_id = u.id ORDER BY o.id DESC")
+        
     if not res_orders.empty:
         list_options = res_orders.apply(lambda r: f"№{r['id']} ({r['receipt_number'] if r['receipt_number'] else 'Бор'}) | {r['client_name']} — {r['device_model']} [{r['status']}]", axis=1).tolist()
         sel_order_text = st.selectbox("Өңдеу үшін тапсырысты таңдаңыз:", list_options)
@@ -538,14 +586,16 @@ elif choice == "📝 Тапсырыстар":
                 
                 if u_status == "Готов" and order_data['status'] != "Готов":
                     send_telegram_notification(u_phone, u_name, order_data['device_model'], sel_id)
+                    sms_text = f"TechPrint.kz: Заказ №{sel_id} ГОТОВ. Аппарат: {order_data['device_model']}. К оплате: {remaining_debt} тг."
+                    send_real_sms(u_phone, sms_text)
                     
                 run_query("UPDATE orders SET client_name=?, phone=?, paid_amount=?, status=?, parts_cost=?, work_cost=?, master_id=?, history=?, selected_part_id=?, selected_service_id=? WHERE id=?", 
                           (u_name, u_phone, u_paid, u_status, u_parts, u_work, m_options[u_master], new_history, p_id, s_catalog_id, sel_id), is_select=False)
                 st.success("Сақталды!")
                 st.rerun()
 
-# --- БЛОК 3: ПЕРСОНАЛ ---
-elif choice == "👥 Персонал (Админ)":
+# --- БЛОК 3: ПЕРСОНАЛ (ПОЛНОСТЬЮ ВОССТАНОВЛЕН И ЗАКРЫТ) ---
+elif choice == "👥 Персонал (Админ)" and st.session_state['role'] == "Директор":
     st.subheader("👥 Персоналды басқару")
     tab1, tab2 = st.tabs(["➕ Жаңа қызметкер қосу", "📋 Тізім және Өшіру"])
     
@@ -567,207 +617,81 @@ elif choice == "👥 Персонал (Админ)":
     with tab2:
         df_u = run_query("SELECT id, username, full_name, role, commission FROM users")
         st.dataframe(df_u, use_container_width=True)
-        del_u = st.number_input("Өшіретін пайдаланушы ID нөмірі", step=1, value=0)
-        if st.button("Өшіру", type="primary") and del_u > 0:
+        del_u = st.number_input("Өшіретін пайдаланушы ID нөмірі", step=1, min_value=1)
+        if st.button("❌ Пайдаланушыны жою"):
             run_query("DELETE FROM users WHERE id=?", (del_u,), is_select=False)
-            st.success("Пайдаланушы өшірілді")
+            st.success("Пайдаланушы сәтті өшірілді!")
             st.rerun()
 
-# --- БЛОК 4: СКЛАД (ДОБАВЛЕНО И ИСПРАВЛЕНО) ---
-elif choice in ["📦 Қойма / Склад (Админ)", "📦 Қойма / Склад (Просмотр)"]:
-    st.subheader("📦 Қойманы басқару (Склад)")
+# --- БЛОК 4: СКЛАД И ABC-АНАЛИЗ ---
+elif "Қойма / Склад" in choice:
+    st.subheader("📦 Қоймалық есеп және талдау")
     
-    # Смена прав доступа
-    is_admin = "Админ" in choice
-    
-    if is_admin:
-        tab_s1, tab_s2, tab_s3 = st.tabs(["📋 Қойма тізімі", "➕ Жаңа тауар қосу / Өзгерту", "📥 Импорт & Экспорт"])
+    if st.session_state['role'] == "Директор":
+        tab_s1, tab_s2, tab_s3 = st.tabs(["📋 Ағымдағы қалдықтар", "➕ Жаңа тауар қосу", "📊 ABC-талдау"])
     else:
-        tab_s1, tab_s2, tab_s3 = st.tabs(["📋 Қойма тізімі", "🔒 Тек көру режимі", "🔒 Экспорт"])
-
+        tab_s1, = st.tabs(["📋 Ағымдағы қалдықтар"])
+        
     with tab_s1:
-        search_stock = st.text_input("🔎 Қоймадан іздеу (Атауы бойынша):", "")
-        if search_stock:
-            df_stock = run_query("SELECT * FROM stock WHERE item_name LIKE ?", (f"%{search_stock}%",))
-        else:
-            df_stock = run_query("SELECT * FROM stock")
+        df_stock = run_query("SELECT * FROM stock")
         st.dataframe(df_stock, use_container_width=True)
-
-    with tab_s2:
-        if is_admin:
-            st.markdown("#### ➕ Тауар енгізу немесе Бар тауарды жаңарту (Атауы сәйкес келсе, мәні өзгереді)")
-            with st.form("stock_form"):
-                s_name = st.text_input("Тауар / Қосалқы бөлшек атауы*")
-                s_type = st.selectbox("Түрі (Тип)", ["Запчасть", "Расходник", "Картридж", "Басқа"])
-                s_qty = st.number_input("Саны (Количество)", value=1.0, min_value=0.0)
-                s_purchase = st.number_input("Сатып алу бағасы (Цена закупки), ₸", value=0.0)
-                s_retail = st.number_input("Сату бағасы (Цена продажи), ₸", value=0.0)
-                
-                if st.form_submit_button("💾 Қоймаға сақтау"):
-                    if s_name:
-                        # Логика INSERT OR REPLACE для UNIQUE поля
-                        run_query('''INSERT INTO stock (item_name, item_type, quantity, purchase_price, retail_price) 
-                                     VALUES (?, ?, ?, ?, ?) 
-                                     ON CONFLICT(item_name) DO UPDATE SET 
-                                     item_type=excluded.item_type, quantity=excluded.quantity, 
-                                     purchase_price=excluded.purchase_price, retail_price=excluded.retail_price''',
-                                  (s_name.strip(), s_type, s_qty, s_purchase, s_retail), is_select=False)
-                        st.success("Тауар сәтті сақталды / жаңартылды!")
-                        st.rerun()
-            
-            st.markdown("---")
-            st.markdown("#### 🗑️ Тауарды қоймадан өшіру")
-            if not df_stock.empty:
-                del_stock_id = st.selectbox("Өшіретін тауарды таңдаңыз:", df_stock.apply(lambda r: f"ID {r['id']} | {r['item_name']}", axis=1).tolist())
-                s_del_id = int(del_stock_id.split(" ")[1])
-                if st.button("🔴 Тауарды өшіру", type="primary"):
-                    run_query("DELETE FROM stock WHERE id=?", (s_del_id,), is_select=False)
-                    st.success("Тауар қоймадан өшірілді.")
-                    st.rerun()
-        else:
-            st.warning("Сізде тауар қосуға немесе өзгертуге құқығыңыз жоқ. Тек Директор өзгерте алады.")
-
-    with tab_s3:
-        st.markdown("#### 📤 Қойманы Excel форматына Экспорттау")
-        if not df_stock.empty:
-            towrite = io.BytesIO()
-            df_stock.to_excel(towrite, index=False, header=True, engine='openpyxl')
-            towrite.seek(0)
-            st.download_button(label="📥 Складты Excel-ге жүктеп алу", data=towrite, file_name=f"stock_export_{datetime.now().strftime('%Y%m%d')}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         
-        if is_admin:
-            st.markdown("---")
-            st.markdown("#### 📥 Excel файл арқылы қоймаға жаппай импорттау")
-            st.info("Файл бағандары келесідей болуы тиіс: item_name, item_type, quantity, purchase_price, retail_price")
-            
-            # Генерация шаблона для пользователя
-            template_df = pd.DataFrame(columns=["item_name", "item_type", "quantity", "purchase_price", "retail_price"])
-            template_io = io.BytesIO()
-            template_df.to_excel(template_io, index=False, engine='openpyxl')
-            template_io.seek(0)
-            st.download_button("Шаблон файлын жүктеу", data=template_io, file_name="stock_template.xlsx")
-            
-            uploaded_file = st.file_uploader("Excel файлын таңдаңыз (.xlsx):", type=["xlsx"])
-            if uploaded_file is not None:
-                try:
-                    imp_df = pd.read_excel(uploaded_file)
-                    required_cols = ["item_name", "item_type", "quantity", "purchase_price", "retail_price"]
-                    if all(col in imp_df.columns for col in required_cols):
-                        for _, r in imp_df.iterrows():
-                            run_query('''INSERT INTO stock (item_name, item_type, quantity, purchase_price, retail_price) 
-                                         VALUES (?, ?, ?, ?, ?) 
-                                         ON CONFLICT(item_name) DO UPDATE SET 
-                                         quantity=excluded.quantity, purchase_price=excluded.purchase_price, retail_price=excluded.retail_price''',
-                                      (str(r['item_name']).strip(), str(r['item_type']), float(r['quantity']), float(r['purchase_price']), float(r['retail_price'])), is_select=False)
-                        st.success("Excel-ден деректер сәтті импортталды!")
-                        st.rerun()
-                    else:
-                        st.error("Файл ішіндегі баған атаулары қате. Шаблонды қараңыз.")
-                except Exception as e:
-                    st.error(f"Импорт кезінде қате кетті: {e}")
+    if st.session_state['role'] == "Директор":
+        with tab_s2:
+            with st.form("add_stock_item"):
+                i_name = st.text_input("Тауар/Бөлшек атауы*")
+                i_type = st.selectbox("Санаты", ["Запчасть", "Расходник", "Тонер", "Басқа"])
+                i_qty = st.number_input("Саны", min_value=0.0, value=1.0)
+                i_p_price = st.number_input("Кіріс бағасы", min_value=0.0)
+                i_r_price = st.number_input("Бөлшек бағасы", min_value=0.0)
+                if st.form_submit_button("Қоймаға қосу"):
+                    run_query("INSERT OR REPLACE INTO stock (item_name, item_type, quantity, purchase_price, retail_price) VALUES (?,?,?,?,?)", (i_name, i_type, i_qty, i_p_price, i_r_price), is_select=False)
+                    st.success("Қойма жаңартылды!")
+                    st.rerun()
+                    
+        with tab_s3:
+            df_abc = run_query("SELECT item_name, quantity, retail_price FROM stock")
+            if not df_abc.empty:
+                df_abc['total_value'] = df_abc['quantity'] * df_abc['retail_price']
+                total_stock_sum = df_abc['total_value'].sum()
+                if total_stock_sum > 0:
+                    df_abc = df_abc.sort_values(by='total_value', ascending=False).reset_index(drop=True)
+                    df_abc['share'] = (df_abc['total_value'] / total_stock_sum) * 100
+                    df_abc['cum_share'] = df_abc['share'].cumsum()
+                    df_abc['Класс ABC'] = df_abc['cum_share'].apply(lambda x: "🟢 А (Высокая значимость)" if x <= 80 else ("🟡 В (Средняя)" if x <= 95 else "🔴 С (Низкая өтімділік)"))
+                    st.dataframe(df_abc[['item_name', 'quantity', 'retail_price', 'total_value', 'Класс ABC']], use_container_width=True)
 
-# --- БЛОК 5: КАТАЛОГ УСЛУГ (ДОБАВЛЕНО И ИСПРАВЛЕНО) ---
-elif choice == "🛠️ Қызметтер каталогы":
+# --- БЛОК 5: КАТАЛОГ УСЛУГ ---
+elif choice == "🛠️ Қызметтер каталогы" and st.session_state['role'] == "Директор":
     st.subheader("🛠️ Қызметтер каталогы (Прайс-лист)")
-    
-    tab_srv1, tab_srv2 = st.tabs(["📋 Қызметтер тізімі", "➕ Жаңа қызмет қосу / Басқару"])
-    
-    df_srv = run_query("SELECT * FROM services_catalog")
-    
-    with tab_srv1:
-        st.dataframe(df_srv, use_container_width=True)
-        
-    with tab_srv2:
-        st.markdown("#### ➕ Жаңа қызмет түрін енгізу / бағасын өзгерту")
-        with st.form("service_form"):
-            srv_name = st.text_input("Қызмет (Услуга) атауы*")
-            srv_price = st.number_input("Қызмет құны (Бағасы), ₸", value=0.0, min_value=0.0)
-            
-            if st.form_submit_button("💾 Каталогқа сақтау"):
-                if srv_name:
-                    run_query('''INSERT INTO services_catalog (service_name, price) VALUES (?, ?)
-                                 ON CONFLICT(service_name) DO UPDATE SET price=excluded.price''', 
-                              (srv_name.strip(), srv_price), is_select=False)
-                    st.success("Қызмет каталогы жаңартылды!")
-                    st.rerun()
-        
-        st.markdown("---")
-        st.markdown("#### 🗑️ Қызметті өшіру")
-        if not df_srv.empty:
-            del_srv_text = st.selectbox("Өшіретін қызметті таңдаңыз:", df_srv.apply(lambda r: f"ID {r['id']} | {r['service_name']}", axis=1).tolist())
-            srv_del_id = int(del_srv_text.split(" ")[1])
-            if st.button("🔴 Қызметті өшіру", type="primary"):
-                run_query("DELETE FROM services_catalog WHERE id=?", (srv_del_id,), is_select=False)
-                st.success("Қызмет каталогтан өшірілді.")
-                st.rerun()
+    df_serv = run_query("SELECT * FROM services_catalog")
+    st.dataframe(df_serv, use_container_width=True)
+    with st.form("add_service"):
+        s_name = st.text_input("Қызмет атауы*")
+        s_price = st.number_input("Бағасы (₸)", min_value=0.0)
+        if st.form_submit_button("Каталогқа енгізу"):
+            run_query("INSERT OR REPLACE INTO services_catalog (service_name, price) VALUES (?,?)", (s_name, s_price), is_select=False)
+            st.success("Прайс жаңартылды!")
+            st.rerun()
 
-# --- БЛОК 6: КАССА (ДОБАВЛЕНО) ---
-elif choice == "💰 Касса (Админ)":
-    st.subheader("💰 Кассалық операциялар (Cashbox)")
-    
-    c_tab1, c_tab2 = st.tabs(["📊 Касса журналы", "➕ Шығыс / Доход қосу"])
-    
-    with c_tab1:
-        df_cash = run_query("SELECT * FROM cashbox ORDER BY id DESC")
-        
-        total_income = df_cash[df_cash['op_type'] == 'Доход']['amount'].sum()
-        total_expense = df_cash[df_cash['op_type'] == 'Расход']['amount'].sum()
-        balance = total_income - total_expense
-        
-        col_c1, col_c2, col_c3 = st.columns(3)
-        col_c1.metric("Киріс (Всего Доходов)", f"{total_income:,.0f} ₸")
-        col_c2.metric("Шығыс (Всего Расходов)", f"{total_expense:,.0f} ₸", delta_color="inverse")
-        col_c3.metric("Касса қалдығы (Баланс)", f"{balance:,.0f} ₸")
-        
-        st.markdown("#### 📋 Операциялар тарихы")
-        st.dataframe(df_cash, use_container_width=True)
-
-    with c_tab2:
-        st.markdown("#### ➕ Қолмен кассалық операция енгізу (Мысалы: Аренда, Коммуналка немесе Басқа кіріс)")
-        with st.form("cashbox_form"):
-            c_type = st.selectbox("Операция түрі", ["Доход", "Расход"])
-            c_amount = st.number_input("Сомасы, ₸", min_value=0.0, value=0.0)
-            c_desc = st.text_input("Сипаттамасы (Комментарий)")
-            
-            if st.form_submit_button("💾 Транзакцияны сақтау"):
-                if c_amount > 0:
-                    time_now = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    run_query("INSERT INTO cashbox (op_type, amount, description, created_at) VALUES (?, ?, ?, ?)",
-                              (c_type, c_amount, c_desc, time_now), is_select=False)
-                    st.success("Кассалық операция сәтті тіркелді!")
-                    st.rerun()
-
-# --- БЛОК 7: МЕНИ ТАПСЫРЫСТАРЫМ (МАСТЕР) ---
-elif choice == "🛠️ Менің тапсырыстарым":
-    st.subheader("🛠️ Сізге бекітілген тапсырыстар")
-    my_id = st.session_state['user_id']
-    res_my = run_query("SELECT * FROM orders WHERE master_id=? ORDER BY id DESC", (my_id,))
-    if not res_my.empty:
-        list_my = res_my.apply(lambda r: f"№{r['id']} | {r['client_name']} — {r['device_model']} [{r['status']}]", axis=1).tolist()
-        sel_my = st.selectbox("Тапсырысты таңдаңыз:", list_my)
-        sel_my_id = int(sel_my.split(" ")[0].replace("№", ""))
-        my_order_data = res_my[res_my['id'] == sel_my_id].iloc[0]
-        
-        st.info(f"📋 **Сипаттамасы:** {my_order_data['description']}")
-        with st.form("master_edit_form"):
-            u_status = st.selectbox("Статус", ["В работе", "Готов"], index=["В работе", "Готов"].index(my_order_data['status']) if my_order_data['status'] in ["В работе", "Готов"] else 0)
-            u_parts = st.number_input("Жұмсалған бөлшектер құны, ₸", value=float(my_order_data['parts_cost']))
-            u_work = st.number_input("Жөндеу жұмысының құны, ₸", value=float(my_order_data['work_cost']))
-            
-            if st.form_submit_button("💾 Сақтау"):
+# --- БЛОК 6: КАССА ---
+elif choice == "💰 Касса (Админ)" and st.session_state['role'] == "Директор":
+    st.subheader("💰 Кассалық журнал")
+    col_c1, col_c2 = st.columns(2)
+    with col_c1:
+        with st.form("cashbox_op"):
+            op_type = st.selectbox("Операция түрі", ["Доход", "Расход"])
+            op_amount = st.number_input("Сомасы (₸)", min_value=0.0)
+            op_desc = st.text_input("Түсініктеме")
+            if st.form_submit_button("Транзакцияны жазу"):
                 time_now = datetime.now().strftime("%Y-%m-%d %H:%M")
-                log_m = f"[{time_now}] Шебер статус өзгертті: {u_status}. Бағасы: Бөлшек {u_parts} ₸, Жұмыс {u_work} ₸.\n"
-                new_history_m = (my_order_data['history'] if my_order_data['history'] else "") + log_m
-                
-                if u_status == "Готов":
-                    send_telegram_notification(my_order_data['phone'], my_order_data['client_name'], my_order_data['device_model'], sel_my_id)
-                
-                run_query("UPDATE orders SET status=?, parts_cost=?, work_cost=?, history=? WHERE id=?", 
-                          (u_status, u_parts, u_work, new_history_m, sel_my_id), is_select=False)
-                st.success("Сақталды!")
+                run_query("INSERT INTO cashbox (op_type, amount, description, created_at) VALUES (?,?,?,?)", (op_type, op_amount, op_desc, time_now), is_select=False)
+                st.success("Касса жаңартылды!")
                 st.rerun()
-    else:
-        st.info("Сізге әлі тапсырыстар бекітілмеген.")
-
-else:
-    st.info("Бұл бөлім әлі өңделу үстінде немесе таңдалған рөлге қолжетімсіз.")
+    with col_c2:
+        df_cash = run_query("SELECT * FROM cashbox ORDER BY id DESC")
+        if not df_cash.empty:
+            inc = df_cash[df_cash['op_type'] == 'Доход']['amount'].sum()
+            out = df_cash[df_cash['op_type'] == 'Расход']['amount'].sum()
+            st.metric("Кассадағы нақты қалдық ақша:", f"{(inc - out):,.0f} ₸")
+        st.dataframe(df_cash, use_container_width=True)
