@@ -7,6 +7,7 @@ import urllib.parse
 import json
 import random
 import io
+import re
 
 # Версия БД с поддержкой термопечати и обновлений
 DB_NAME = "service_center_crm_v5_pro.db"
@@ -15,6 +16,49 @@ KASPI_PAY_ID = "orgtechnika_shymkent"
 # --- ОБЯЗАТЕЛЬНО ЗАПОЛНИТЕ ДЛЯ АВТО-СОГЛАСОВАНИЯ ЧЕРЕЗ ТГ ---
 TELEGRAM_BOT_TOKEN = "ВАШ_ТОКЕН_БОТА" 
 YOUR_CHAT_ID = "ВАШ_ЧАТ_ID" 
+
+# --- ФУНКЦИЯ ПАРСИНГА ТОВАРОВ С COPYLINE.KZ ---
+def parse_copyline_product(url):
+    try:
+        # Установка User-Agent для обхода защиты сайта от ботов
+        req = urllib.request.Request(
+            url, 
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            html = response.read().decode('utf-8')
+        
+        # 1. Извлечение Названия (H1)
+        title_match = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.IGNORECASE | re.DOTALL)
+        title = title_match.group(1).strip() if title_match else "Неизвестный товар"
+        
+        # 2. Извлечение Цены
+        price_match = re.search(r'class="price"[^>]*>([\d\s]+)', html, re.IGNORECASE)
+        if price_match:
+            price = float(price_match.group(1).replace(" ", "").strip())
+        else:
+            price = 0.0
+
+        # 3. Извлечение категории (Хлебные крошки)
+        category_match = re.findall(r'<span itemprop="name">(.*?)</span>', html)
+        item_type = category_match[-2].strip() if len(category_match) >= 2 else "Запчасти"
+        
+        # 4. Извлечение Ссылки на Фотографию
+        # Ищет главное изображение в галерее или блоке карточки
+        img_match = re.search(r'<a[^>]+href="([^"]+\.(?:jpg|jpeg|png))"[^>]+data-fancybox="gallery"', html, re.IGNORECASE)
+        if not img_match:
+            img_match = re.search(r'<img[^>]+src="([^"]+\.(?:jpg|jpeg|png))"[^>]+id="main-image"', html, re.IGNORECASE)
+        
+        img_url = ""
+        if img_match:
+            img_url = img_match.group(1).strip()
+            if img_url.startswith('/'):
+                parsed_uri = urllib.parse.urlparse(url)
+                img_url = f"{parsed_uri.scheme}://{parsed_uri.netloc}{img_url}"
+                
+        return {"success": True, "title": title, "price": price, "type": item_type, "image": img_url}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
 
 # --- ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ И SQL ИНДЕКСОВ ---
 def init_db():
@@ -82,7 +126,7 @@ def init_db():
         cursor.execute("INSERT INTO users (username, password, full_name, role, commission) VALUES ('reception', '123', 'Алия (Ресепшен)', 'Ресепшен', 0.0)")
         cursor.execute("INSERT INTO users (username, password, full_name, role, commission) VALUES ('master1', '123', 'Ислам (Мастер)', 'Мастер', 0.40)")
         
-    # Базовый прайс-лист услуг
+    # Базовый прайс-лист услуг (ИСПРАВЛЕНО: Добавлены пропущенные запятые)
     cursor.execute("SELECT COUNT(*) FROM services_catalog")
     if cursor.fetchone()[0] == 0:
         base_services = [
@@ -91,11 +135,11 @@ def init_db():
             ("Замена термопленки / подложки", 4000),
             ("Ремонт узла закрепления (печки)", 6000),
             ("Восстановление платы форматирования", 12000),
-            ("Заправка и очистка картриджа", 2000)
-            ("Заправка и очистка картриджа", 1700)
-            ("Заправка и очистка картриджа", 3000)
-            ("Заправка и очистка картриджа", 2500)
-            ("Ремонт А4 струйных принтеров", 15000)
+            ("Заправка и очистка картриджа", 2000),
+            ("Заправка и очистка картриджа (Эконом)", 1700),
+            ("Заправка и очистка картриджа (Цветной)", 3000),
+            ("Заправка и очистка картриджа (Премиум)", 2500),
+            ("Ремонт А4 струйных принтеров", 15000),
             ("Ремонт А3 струйных принтеров", 20000)
         ]
         cursor.executemany("INSERT INTO services_catalog (service_name, price) VALUES (?, ?)", base_services)
@@ -213,7 +257,6 @@ st.markdown("""
     .penalty-box { background-color: #fef2f2; border: 1px solid #fca5a5; padding: 15px; border-radius: 12px; color: #991b1b; margin-top: 10px; font-size: 15px; }
     .status-badge { background-color: #e0f2fe; color: #0369a1; padding: 6px 12px; border-radius: 20px; font-weight: bold; display: inline-block; }
     
-    /* --- СТИЛИ ДЛЯ ТЕРМОПЕЧАТИ (ПРИНТЕРЫ 58мм / 80мм) --- */
     @media print {
         body * { visibility: hidden; }
         .thermal-print-area, .thermal-print-area * { visibility: visible; }
@@ -221,7 +264,7 @@ st.markdown("""
             position: absolute; 
             left: 0; 
             top: 0; 
-            width: 74mm; /* Идеально для ленты 80мм (для 58мм замените на 52mm) */
+            width: 74mm; 
             padding: 0px; 
             margin: 0px; 
             background: white !important; 
@@ -251,14 +294,11 @@ def show_print_receipt(order):
     debt = total - order['paid_amount']
     rec_num = order['receipt_number'] if order['receipt_number'] else f"№ {order['id']}"
     
-    # Генерация QR-кода, чтобы клиент мог быстро отсканировать чек
     base_url = "https://crm-techprint.streamlit.app" 
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=110x110&data={base_url}/?track_num={rec_num}"
 
-    # JS Кнопка "Запустить печать браузера" (скрывается при самой печати)
     st.markdown('<button onclick="window.print()" class="no-print" style="width:100%; padding:12px; margin-bottom:15px; background-color:#22c55e; color:white; border:none; border-radius:8px; font-weight:bold; font-size:15px; cursor:pointer;">🟢 БАСЫП ШЫҒАРУ (ПЕЧАТЬ)</button>', unsafe_allow_html=True)
     
-    # Структура чека для ленты
     st.html(f"""
     <div class="thermal-print-area thermal-box-preview">
         <div style="text-align: center;">
@@ -339,7 +379,6 @@ if app_mode == "📱 Личный кабинет клиента":
     st.title("📱 Клиенттік Портал — TechPrint.kz")
     st.markdown("### 🔍 Тапсырысты квитанция/трек нөмірі бойынша жылдам тексеру")
     
-    # Автоматический перехват трек-номера из QR-кода на термочеке
     url_track = st.query_params.get("track_num", "")
     track_num = st.text_input("Квитанция немесе Трек-номерін енгізіңіз (например: TP-2026-4521):", value=url_track, placeholder="TP-2026-XXXX")
     
@@ -470,7 +509,6 @@ if choice == "📊 Басты бет & Аналитика":
         with c2: st.markdown(f'<div class="metric-card"><div class="metric-title">Barslyq To’lengen</div><div class="metric-value">{total_paid:,.0f} ₸</div></div>', unsafe_allow_html=True)
         with c3: st.markdown(f'<div class="metric-card"><div class="metric-title" style="color:#16a34a;">Таза Пайда СЦ</div><div class="metric-value" style="color:#16a34a;">{net_profit:,.0f} ₸</div></div>', unsafe_allow_html=True)
 
-    # --- Подсчет зарплаты мастеров ---
     st.markdown("---")
     st.subheader("👨‍🔧 Шеберлердің еңбекақысын есептеу (Зарплата мастеров)")
     df_masters_salary = run_query("""
@@ -518,7 +556,6 @@ elif choice == "📝 Тапсырыстар":
 
     res_orders = run_query("SELECT o.*, u.full_name as master_name FROM orders o LEFT JOIN users u ON o.master_id = u.id ORDER BY o.id DESC")
     
-    # --- Экспорт всех заказов в Excel ---
     if not res_orders.empty:
         buffer_orders = io.BytesIO()
         with pd.ExcelWriter(buffer_orders, engine='xlsxwriter') as writer:
@@ -531,7 +568,6 @@ elif choice == "📝 Тапсырыстар":
         sel_id = int(sel_order_text.split(" ")[0].replace("№", ""))
         order_data = res_orders[res_orders['id'] == sel_id].iloc[0]
         
-        # Кнопка вызова термопринтера
         if st.button("🖨️ КВИТАНЦИЯНЫ ТЕРМОПРИНТЕРГЕ ШЫҒАРУ"):
             show_print_receipt(order_data)
             
@@ -620,7 +656,7 @@ elif choice == "📝 Тапсырыстар":
                 disp_rec = order_data['receipt_number'] if order_data['receipt_number'] else f"№{sel_id}"
                 msg_full = (
                     f"⚙️ *Сервисный Центр TechPrint.kz*\n"
-                    f"Тапсырыс {disp_rec} ({order_data['device_model']})\n"
+                    f"Тапрысыс {disp_rec} ({order_data['device_model']})\n"
                     f"Жалпы жөндеу құны: *{total_bill:,.0f} ₸.*\n\n"
                     f"🟢 *ЖӨНДЕУГЕ КЕЛІСЕМІН (СОГЛАСЕН):*\n{link_approve_crm}\n\n"
                     f"🔴 *БАС ТАРТАМЫН (ОТКАЗЫВАЮСЬ):*\n{link_reject_crm}\n\n"
@@ -702,9 +738,58 @@ elif choice == "👥 Персонал (Админ)":
             st.success("Қызметкер сәтті өшірілді!")
             st.rerun()
 
-# --- БЛОК 4: СКЛАД ---
+# --- БЛОК 4: СКЛАД (С ПАРСЕРОМ ТОВАРОВ И ФОТО) ---
 elif "Қойма / Склад" in choice:
     st.subheader("📦 Қойма / Склад")
+    
+    # ИНТЕГРАЦИЯ ПАРСЕРА КАТАЛОГА В СТРИМЛИТ ВЕРХНЕЙ ПАНЕЛЬЮ
+    if st.session_state['role'] == "Директор":
+        with st.expander("🔍 Авто-парсер каталога товаров (с сайта CopyLine.kz)"):
+            st.markdown("Вставьте ссылку на любой товар с сайта `copyline.kz`, система вытащит данные и фото автоматически.")
+            parse_url = st.text_input("Ссылка на товар:", placeholder="https://copyline.kz/goods/...")
+            
+            if st.button("Распознать товар по ссылке", type="secondary"):
+                if parse_url:
+                    with st.spinner("Загрузка и парсинг страницы..."):
+                        product_data = parse_copyline_product(parse_url)
+                    
+                    if product_data["success"]:
+                        st.success("Данные успешно извлечены!")
+                        col_p1, col_p2 = st.columns([1, 2])
+                        
+                        with col_p1:
+                            if product_data["image"]:
+                                st.image(product_data["image"], width=200, caption="Фото из каталога")
+                            else:
+                                st.info("Изображение не найдено")
+                        
+                        with col_p2:
+                            st.write(f"**Название:** {product_data['title']}")
+                            st.write(f"**Тип товара:** {product_data['type']}")
+                            st.write(f"**Определенная цена:** {product_data['price']:,.0f} ₸")
+                        
+                        # Кнопка быстрой вставки в базу CRM
+                        st.markdown("#### Сохранить спарсенный товар на склад:")
+                        with st.form("save_parsed_form"):
+                            f_name = st.text_input("Название для базы", value=product_data['title'])
+                            f_type = st.text_input("Тип/Категория", value=product_data['type'])
+                            f_qty = st.number_input("Количество (шт)", value=5, min_value=1)
+                            f_price_in = st.number_input("Закуп цена (₸)", value=float(product_data['price'] * 0.7))
+                            f_price_out = st.number_input("Розничная цена (₸)", value=float(product_data['price']))
+                            
+                            if st.form_submit_button("➕ Занести в базу CRM"):
+                                run_query(
+                                    "INSERT OR REPLACE INTO stock (item_name, item_type, quantity, purchase_price, retail_price) VALUES (?,?,?,?,?)",
+                                    (f_name, f_type, f_qty, f_price_in, f_price_out), is_select=False
+                                )
+                                st.success(f"Товар '{f_name}' добавлен на склад!")
+                                st.rerun()
+                    else:
+                        st.error(f"Ошибка при парсинге: {product_data['error']}")
+                else:
+                    st.warning("Введите рабочую ссылку!")
+
+    # Стандартный вывод таблицы склада
     df_stock = run_query("SELECT id, item_name, item_type, quantity, purchase_price, retail_price FROM stock")
     st.dataframe(df_stock, use_container_width=True)
     
@@ -759,7 +844,7 @@ elif choice == "🛠️ Қызметтер каталогы":
                 st.rerun()
 
 # --- БЛОК 6: КАССА ---
-elif choice == "💰 Касса (Админ)":
+elif choice == "💰 Касса (Admin)":
     st.subheader("💰 Сервистік орталықтың кассасы")
     df_cash = run_query("SELECT id, op_type, amount, description, created_at FROM cashbox ORDER BY id DESC")
     
