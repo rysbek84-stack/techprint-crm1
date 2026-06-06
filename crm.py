@@ -331,39 +331,40 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- ИСПРАВЛЕННАЯ ФУНКЦИЯ ПЕЧАТИ ---
-@st.dialog("🖨️ Термопринтер баспасы (Печать чека)", width="small")
+@st.dialog("🖨️ Термопринтер баспасы", width="small")
 def show_print_receipt(order):
+    # 1. Сначала определяем все данные
     total = order['parts_cost'] + order['work_cost']
-    debt = total - order['paid_amount']
     rec_num = order['receipt_number'] if order['receipt_number'] else f"№ {order['id']}"
     
-    # --- ВАЖНО: Определяем переменные здесь, внутри функции ---
     base_url = "https://crm-techprint.streamlit.app" 
     qr_data = f"{base_url}/?track_num={rec_num}"
+    # Генерируем URL картинки QR-кода
     qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=110x110&data={urllib.parse.quote(qr_data)}"
-    # --------------------------------------------------------
 
-    st.markdown('<button onclick="window.print()" class="no-print" style="width:100%; padding:12px; margin-bottom:15px; background-color:#22c55e; color:white; border:none; border-radius:8px; font-weight:bold; font-size:15px; cursor:pointer;">🟢 БАСЫП ШЫҒАРУ (ПЕЧАТЬ)</button>', unsafe_allow_html=True)
+    # 2. Кнопка печати (используем прямой вызов JS)
+    st.markdown(f"""
+        <button onclick="window.print();" style="width:100%; padding:15px; background-color:#22c55e; color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">
+            🟢 БАСЫП ШЫҒАРУ (ПЕЧАТЬ)
+        </button>
+    """, unsafe_allow_html=True)
     
-    # Теперь qr_url определена, и f-строка сработает корректно
+    # 3. HTML-разметка квитанции
     st.html(f"""
-    <div class="thermal-print-area thermal-box-preview">
+    <div class="thermal-print-area" style="width: 250px; padding: 10px; font-family: 'Courier New', monospace; font-size: 13px; border: 1px dashed #ccc;">
         <div style="text-align: center;">
-            <h3 style="margin: 0; font-size: 16px; font-weight: bold;">TechPrint.kz</h3>
+            <h3 style="margin: 0;">TechPrint.kz</h3>
+            <p>Квитанция: <b>{rec_num}</b></p>
         </div>
-        
-        <div style="text-align: center; font-weight: bold;">
-            ТАПСЫРЫС ТҮБІРТЕГІ<br>
-            <span style="font-size: 15px;">{rec_num}</span>
-        </div>
-        
-        <div style="text-align: center; margin-top: 8px;">
-            <img src="{qr_url}" style="margin-top: 5px; width: 105px; height: 105px;" /><br>
+        <div style="border-top: 1px dashed black; margin: 5px 0;"></div>
+        <p><b>Клиент:</b> {order['client_name']}</p>
+        <p><b>Аппарат:</b> {order['device_model']}</p>
+        <p><b>Итого:</b> {total:,.0f} ₸</p>
+        <div style="text-align: center; margin-top: 10px;">
+            <img src="{qr_url}" style="width: 100px; height: 100px;" />
         </div>
     </div>
     """)
-
 st.sidebar.markdown("### ⚙️ РЕЖИМ РАБОТЫ")
 app_mode = st.sidebar.radio("Выберите interface:", ["🏢 Сотрудники СЦ", "📱 Личный кабинет клиента"])
 
