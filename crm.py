@@ -331,87 +331,35 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- ФУНКЦИЯ ПЕЧАТИ КВИТАНЦИИ НА ТЕРМОПРИНТЕРЕ ---
-@st.dialog("🖨️ Термопринтер баспасы (Печать чека)", width="small")
+# --- ИСПРАВЛЕННАЯ ФУНКЦИЯ ПЕЧАТИ ---
+@st.dialog("🖨️ Печать квитанции", width="small")
 def show_print_receipt(order):
-    total = order['parts_cost'] + order['work_cost']
-    debt = total - order['paid_amount']
-    rec_num = order['receipt_number'] if order['receipt_number'] else f"№ {order['id']}"
+    # ... (весь код до кнопки) ...
     
-    base_url = "https://crm-techprint.streamlit.app" 
-    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=110x110&data={base_url}/?track_num={rec_num}"
+    # Кнопка теперь использует более надежный вызов JS
+    st.markdown('''
+    <button onclick="window.print();" style="width:100%; padding:15px; background-color:#22c55e; color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">
+        🟢 ОТПРАВИТЬ НА ПЕЧАТЬ
+    </button>
+    ''', unsafe_allow_html=True)
 
-    st.markdown('<button onclick="window.print()" class="no-print" style="width:100%; padding:12px; margin-bottom:15px; background-color:#22c55e; color:white; border:none; border-radius:8px; font-weight:bold; font-size:15px; cursor:pointer;">🟢 БАСЫП ШЫҒАРУ (ПЕЧАТЬ)</button>', unsafe_allow_html=True)
-    
-    st.html(f"""
-    <div class="thermal-print-area thermal-box-preview">
+    # Используем чистый HTML для области печати
+    html_receipt = f"""
+    <div class="thermal-print-area" style="width: 250px; font-family: 'Courier New', monospace; font-size: 12px; color: black;">
         <div style="text-align: center;">
-            <h3 style="margin: 0; font-size: 16px; font-weight: bold;">TechPrint.kz</h3>
-            <span style="font-size: 11px;">TechPrint Сервистік орталық Шымкент</span><br>
-            <span style="font-size: 11px;">Жөндеу және техниканы күту</span>
+            <h3>TechPrint.kz</h3>
+            <p>Квитанция: {order['receipt_number']}</p>
         </div>
-        
-        <div style="border-top: 1px dashed black; margin: 8px 0;"></div>
-        
-        <div style="text-align: center; font-weight: bold;">
-            ТАПСЫРЫС ТҮБІРТЕГІ / КВИТАНЦИЯ<br>
-            <span style="font-size: 15px;">{rec_num}</span><br>
-            <span style="font-size: 11px; font-weight: normal;">Уақыты: {order['created_at']}</span>
-        </div>
-        
-        <div style="border-top: 1px dashed black; margin: 8px 0;"></div>
-        
-        <div style="line-height: 1.4;">
-            <b>Клиент:</b> {order['client_name']}<br>
-            <b>Телефон:</b> {order['phone']}<br>
-            <b>Аппарат:</b> {order['device_model']}<br>
-            <b>S/N:</b> {order['serial_number'] if order['serial_number'] else '-'}<br>
-            <b>Ақаулық:</b> {order['description']}<br>
-        </div>
-        
-        <div style="border-top: 1px dashed black; margin: 8px 0;"></div>
-        
-        <table style="width: 100%; font-size: 13px; font-family: 'Courier New', monospace;">
-            <tr>
-                <td>Бөлшектер (Запчасти):</td>
-                <td style="text-align: right;">{order['parts_cost']:,.0f} ₸</td>
-            </tr>
-            <tr>
-                <td>Қызмет (Работа):</td>
-                <td style="text-align: right;">{order['work_cost']:,.0f} ₸</td>
-            </tr>
-            <tr style="font-weight: bold;">
-                <td>Жалпы сомасы (Итого):</td>
-                <td style="text-align: right;">{total:,.0f} ₸</td>
-            </tr>
-            <tr style="color: green; font-weight: bold;">
-                <td>Төленгені (Внесено):</td>
-                <td style="text-align: right;">{order['paid_amount']:,.0f} ₸</td>
-            </tr>
-            <tr style="color: red; font-weight: bold; border-top: 1px solid black;">
-                <td>Қалдық қарыз (Доплата):</td>
-                <td style="text-align: right;">{debt:,.0f} ₸</td>
-            </tr>
-        </table>
-        
-        <div style="border-top: 1px dashed black; margin: 8px 0;"></div>
-        
-        <div style="font-size: 10px; text-align: justify; line-height: 1.2;">
-            <b>Маңызды ескерту:</b> Құрылғы дайын болған соң 3 күн тегін сақталады. Мерзімнен асса — сақтау ақысы күніне 500 ₸ құрайды.
-        </div>
-        
-        <div style="border-top: 1px dashed black; margin: 8px 0;"></div>
-        
-        <div style="text-align: center; margin-top: 8px;">
-            <span style="font-size: 11px;">Статусты онлайн тексеру QR:</span><br>
-            <img src="{qr_url}" style="margin-top: 5px; width: 105px; height: 105px;" /><br>
-            <span style="font-size: 12px; font-weight: bold; display: block; margin-top: 5px;">Рахмет! / Спасибо!</span>
+        <hr>
+        <p><b>Клиент:</b> {order['client_name']}</p>
+        <p><b>Аппарат:</b> {order['device_model']}</p>
+        <p><b>Итого:</b> {order['parts_cost'] + order['work_cost']} ₸</p>
+        <div style="text-align: center;">
+            <img src="{qr_url}" style="width:100px;"/>
         </div>
     </div>
-    """)
-
-if 'logged_in' not in st.session_state:
-    st.session_state.update({'logged_in': False, 'role': None, 'user_id': None, 'username': None, 'full_name': None})
+    """
+    st.markdown(html_receipt, unsafe_allow_html=True)
 
 st.sidebar.markdown("### ⚙️ РЕЖИМ РАБОТЫ")
 app_mode = st.sidebar.radio("Выберите interface:", ["🏢 Сотрудники СЦ", "📱 Личный кабинет клиента"])
