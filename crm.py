@@ -332,34 +332,37 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- ИСПРАВЛЕННАЯ ФУНКЦИЯ ПЕЧАТИ ---
-@st.dialog("🖨️ Печать квитанции", width="small")
+@st.dialog("🖨️ Термопринтер баспасы (Печать чека)", width="small")
 def show_print_receipt(order):
-    # ... (весь код до кнопки) ...
+    total = order['parts_cost'] + order['work_cost']
+    debt = total - order['paid_amount']
+    rec_num = order['receipt_number'] if order['receipt_number'] else f"№ {order['id']}"
     
-    # Кнопка теперь использует более надежный вызов JS
-    st.markdown('''
-    <button onclick="window.print();" style="width:100%; padding:15px; background-color:#22c55e; color:white; border:none; border-radius:8px; font-weight:bold; cursor:pointer;">
-        🟢 ОТПРАВИТЬ НА ПЕЧАТЬ
-    </button>
-    ''', unsafe_allow_html=True)
+    # --- ВАЖНО: Определяем переменные здесь, внутри функции ---
+    base_url = "https://crm-techprint.streamlit.app" 
+    qr_data = f"{base_url}/?track_num={rec_num}"
+    qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=110x110&data={urllib.parse.quote(qr_data)}"
+    # --------------------------------------------------------
 
-    # Используем чистый HTML для области печати
-    html_receipt = f"""
-    <div class="thermal-print-area" style="width: 250px; font-family: 'Courier New', monospace; font-size: 12px; color: black;">
+    st.markdown('<button onclick="window.print()" class="no-print" style="width:100%; padding:12px; margin-bottom:15px; background-color:#22c55e; color:white; border:none; border-radius:8px; font-weight:bold; font-size:15px; cursor:pointer;">🟢 БАСЫП ШЫҒАРУ (ПЕЧАТЬ)</button>', unsafe_allow_html=True)
+    
+    # Теперь qr_url определена, и f-строка сработает корректно
+    st.html(f"""
+    <div class="thermal-print-area thermal-box-preview">
         <div style="text-align: center;">
-            <h3>TechPrint.kz</h3>
-            <p>Квитанция: {order['receipt_number']}</p>
+            <h3 style="margin: 0; font-size: 16px; font-weight: bold;">TechPrint.kz</h3>
         </div>
-        <hr>
-        <p><b>Клиент:</b> {order['client_name']}</p>
-        <p><b>Аппарат:</b> {order['device_model']}</p>
-        <p><b>Итого:</b> {order['parts_cost'] + order['work_cost']} ₸</p>
-        <div style="text-align: center;">
-            <img src="{qr_url}" style="width:100px;"/>
+        
+        <div style="text-align: center; font-weight: bold;">
+            ТАПСЫРЫС ТҮБІРТЕГІ<br>
+            <span style="font-size: 15px;">{rec_num}</span>
+        </div>
+        
+        <div style="text-align: center; margin-top: 8px;">
+            <img src="{qr_url}" style="margin-top: 5px; width: 105px; height: 105px;" /><br>
         </div>
     </div>
-    """
-    st.markdown(html_receipt, unsafe_allow_html=True)
+    """)
 
 st.sidebar.markdown("### ⚙️ РЕЖИМ РАБОТЫ")
 app_mode = st.sidebar.radio("Выберите interface:", ["🏢 Сотрудники СЦ", "📱 Личный кабинет клиента"])
